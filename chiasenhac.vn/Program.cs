@@ -15,14 +15,17 @@ namespace ChiaSeNhac.VN
 
         private static async Task TestGetAlbumPage()
         {
-            var url = "https://chiasenhac.vn/nghe-album/The-Best-Of-Cam-Ly~Y3NuX2FsYnVtfjQ2Nzcy.html";
+            var url = "https://chiasenhac.vn/playlist/Nhac-Tre-Nhe-Nhang-Sau-Lang~Y3NuX3BsYXlsaXN0fjEwNTM=.html";
 
-            ChiaSeNhacVN downloader = new ChiaSeNhacVN("ngocson");
+            ChiaSeNhacVN downloader = new ChiaSeNhacVN("nhac-tre")
+            {
+                Threads = 5
+            };
 
             var obj = await downloader.GetAlbumPages(url);
 
             obj.Print();
-
+            await downloader.DownloadList(obj.Pages.ToList(), null);
         }
 
         private static async  Task TestGetArtistPages()
@@ -42,7 +45,7 @@ namespace ChiaSeNhac.VN
             var html = await downloader.GetHtml("https://vn.chiasenhac.vn/mp3/vietnam/v-pop/nam-lay-tay-anh~tuan-hung~ts35db73qhmqtw.html");
 
             var obj = downloader.ExtractPlayerConfig(html);
-            await downloader.DownloadFile(obj.LosslessFile);
+            await downloader.DownloadFile(obj.LosslessFile, 1);
         }
     }
 }

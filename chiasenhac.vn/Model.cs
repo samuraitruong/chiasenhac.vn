@@ -6,16 +6,18 @@ using Newtonsoft.Json;
 
 namespace ChiaSeNhac.VN
 {
-    public class PageWithItems {
-    public string Name { get; set; }
-    public ConcurrentBag<PageItem> Pages { get; set; }
-    public string Url { get; set; }
+   
+    public class PageWithItems
+    {
+        public string Name { get; set; }
+        public ConcurrentBag<PageItem> Pages { get; set; }
+        public string Url { get; set; }
 
         public PageWithItems()
-    {
-        Pages = new ConcurrentBag<PageItem>();
+        {
+            Pages = new ConcurrentBag<PageItem>();
+        }
     }
-}
 
     public class Artist : PageWithItems
     {

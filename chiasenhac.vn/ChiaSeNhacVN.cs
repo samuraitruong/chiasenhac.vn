@@ -18,10 +18,21 @@ namespace ChiaSeNhac.VN
     public class ChiaSeNhacVN
     {
         private Object locker;
-
+        public string MediaFormat { get; set; }
         public string Output { get; }
+        public int Threads { get; set; }
         ConcurrentQueue<HttpClient> httpClients = new ConcurrentQueue<HttpClient>();
-
+        private object consolerLock = new object();
+        private void PrintMessage(string message, int line)
+        {
+            lock(consolerLock)
+            {
+                message = message.Substring(0, Math.Min(message.Length, Console.WindowWidth));
+                var pad = Console.WindowWidth - message.Length;
+                Console.SetCursorPosition(0, line);
+                Console.Write(message.PadRight(Math.Max(0, pad)));
+            }
+        }
         private HttpClient GetClient()
         {
             HttpClient client = null;
@@ -42,26 +53,40 @@ namespace ChiaSeNhac.VN
         public ChiaSeNhacVN(string output = "")
         {
             Output = output;
+            Threads = 5;
             locker = new object();
         }
-        public async Task<string> GetHtml(string url)
+        public async Task<string> GetHtml(string url, int retry =3)
         {
             Console.WriteLine("Get Html Page : " + url);
-            using (var client = new HttpClient())
+            try
             {
-                var response = await client.GetAsync(url);
-                return await response.Content.ReadAsStringAsync();
+                using (var client = new HttpClient())
+                {
+                    var response = await client.GetAsync(url);
+                    return await response.Content.ReadAsStringAsync();
+                }
+            }
+            catch(Exception ex)
+            {
+                if(retry>0)
+                {
+                    return await GetHtml(url, retry - 1);
+                }
+                throw ex;
             }
         }
-        public async Task DownloadPage(PageItem page)
+        public async Task DownloadPage(PageItem page, int line)
         {
             try
             {
+                // logic to handle mediatype
+
                 var html = await GetHtml(page.Url);
                 var config = ExtractPlayerConfig(html);
                 if (config == null || config.LosslessFile == null) return;
                
-                await DownloadFile(config.LosslessFile);
+                await DownloadFile(config.LosslessFile, line);
             }
             catch(Exception ex)
             {
@@ -69,16 +94,16 @@ namespace ChiaSeNhac.VN
                 page.Print();
             }
         }
-        public async Task DownloadFile(FileItem file)
+        public async Task DownloadFile(FileItem file, int line)
         {
             string filename = Path.GetFileName(file.File).UrlDecode();
             var originalName = filename;
             filename = Path.Combine(this.Output, filename);
             if(File.Exists(filename)) {
-                Console.WriteLine($"File exist, ignore {filename}");
+                PrintMessage($"File exist, ignore {filename}", line);
                 return;
             }
-            Console.WriteLine($"Downloading : {file.File}");
+            PrintMessage($"Downloading : {file.File}", line);
             //var webClient = new WebClient();
             //var startTime = DateTime.Now;
             //webClient.DownloadProgressChanged += (sender, e) => {
@@ -94,40 +119,34 @@ namespace ChiaSeNhac.VN
 
             //await webClient.DownloadFileTaskAsync(new Uri(file.File), filename);
 
-            DownloadFileWithMultipleThread(file.File, originalName, this.Output);
-
-            Console.WriteLine("File download complete");
+            DownloadFileWithMultipleThread(file.File, originalName, this.Output, (s) => {
+                PrintMessage(s, line);
+            });
+            PrintMessage("File download complete", line);
             await Task.CompletedTask;
         }
-        public async Task<Artist> GetAlbumPages(string url)
+        public async Task<Album> GetAlbumPages(string url)
         {
             string html = await GetHtml(url);
-            var artis = ExtractArtist(html);
+
             var doc = new HtmlDocument();
             doc.LoadHtml(html);
 
-            var last = doc.DocumentNode.SelectNodes("//*[@class='pagination']//a").LastOrDefault();
-
-            Console.WriteLine("Total page {0}", last.InnerText);
-            Parallel.ForEach(Enumerable.Range(1, Convert.ToInt32(last.InnerText)), (index) =>
+            var album = new Album()
             {
-                try
-                {
-                    var pageHtml = this.GetHtml($"https://chiasenhac.vn/tab_artist?page={index}&artist_id={artis.Id}&tab=music").Result;
-                    var items = this.ParseArtistPage(pageHtml);
-                    foreach (var item in items)
-                    {
-                        artis.Pages.Add(item);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("ERROR: " + ex.Message + ex.StackTrace);
-                }
+                Name = doc.DocumentNode.SelectSingleNode("//h1[@class='title']").InnerText.Trim()
+            };
 
-            });
-            Console.WriteLine($"Found {artis.Pages.Count} pages");
-            return artis;
+            var pages = doc.DocumentNode.SelectNodes("//*[@class='d-table']//div[@class='name d-table-cell']/a");
+            foreach (HtmlNode item in pages)
+            {
+                album.Pages.Add(new PageItem()
+                {
+                    Name = item.GetAttributeValue("title", ""),
+                    Url = item.GetAttributeValue("href", "")
+                });
+            }
+            return album;
         }
 
         public async Task<Artist> GetArtistPages(string url)
@@ -160,22 +179,35 @@ namespace ChiaSeNhac.VN
             return artis;
         }
 
-        public async Task DownloadList(List<PageItem> pages)
+        public async Task DownloadList(List<PageItem> pages, string mediaType = "Lossless")
         {
+            Console.Clear();
+            Console.WriteLine($"Starting download {pages.Count} page, mediaType = {mediaType}");
             if (!Directory.Exists(this.Output))
             {
                 Directory.CreateDirectory(this.Output);
             }
+            ConcurrentQueue<int> lineQueue = new ConcurrentQueue<int>(Enumerable.Range(1, this.Threads));
 
-            Parallel.ForEach(pages.Where(x => x.Label == "Lossless"), new ParallelOptions()
+            Parallel.ForEach(pages.Where(x => x.Label == mediaType || mediaType == null), new ParallelOptions()
             {
-                MaxDegreeOfParallelism = 1
+                MaxDegreeOfParallelism = this.Threads
             }, (item) =>
             {
-                this.DownloadPage(item).Wait();
-
+                int line = 1;
+                lineQueue.TryDequeue(out line);
+                try
+                {
+                    this.DownloadPage(item, line).Wait();
+                }
+                finally{
+                    lineQueue.Enqueue(line);
+                }
             });
             await Task.CompletedTask;
+
+            Console.Clear();
+            Console.WriteLine("Download processes finished");
 
         }
         #region Parser
@@ -203,7 +235,7 @@ namespace ChiaSeNhac.VN
             return result;
         }
 
-        string DownloadFileWithMultipleThread(string url, string ouputFilename, string folder, List<string> checkFolders = null, int thread = 20, long chunkSize = 102400)
+        string DownloadFileWithMultipleThread(string url, string ouputFilename, string folder, Action<string> print, List<string> checkFolders = null, int thread = 20, long chunkSize = 102400)
         {
             string filename = Path.GetFileName(HttpUtility.UrlDecode(url));
             if (!string.IsNullOrEmpty(ouputFilename))
@@ -244,9 +276,8 @@ namespace ChiaSeNhac.VN
 
                 lock (locker)
                 {
-                    Console.Clear();
                     var trimmedTitle = filename.Substring(0, Math.Min(Console.WindowWidth - 30, filename.Length));
-                    Console.WriteLine($"Downloading {trimmedTitle} | Size {totalSizeBytes / mb:0.00} MB ");
+                    print($"Downloading {trimmedTitle} | Size {totalSizeBytes / mb:0.00} MB ");
                 }
                 numberOfChunks = (int)(totalSizeBytes / chunkSize) + (((long)totalSizeBytes % chunkSize != 0) ? 1 : 0);
             }
@@ -257,7 +288,6 @@ namespace ChiaSeNhac.VN
             //Initial empty file 
             var tlocker = new Object();
             string tempFile = output + ".chunks";
-            CancellationTokenSource cts = new CancellationTokenSource();
 
             using (var fs = new FileStream(tempFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
             {
@@ -287,7 +317,6 @@ namespace ChiaSeNhac.VN
 
                      var chunkDownload = DownloadChunk(url, chunkStart, chunkEnd, chunkFileName).Result;
 
-
                      lock (locker)
                      {
                          downloadedBytes += chunkDownload.Length;
@@ -301,7 +330,7 @@ namespace ChiaSeNhac.VN
                          {
                              Console.SetCursorPosition(0, 1);
 
-                             Console.WriteLine($"#{s:000} | Received: {(downloadedBytes + resumeBytes) / mb:0.00} MB - {(downloadedBytes + resumeBytes) / totalSizeBytes:P2} | Speed : {kbs:0.00} KB/s | ETA: {etaHour:00}:{etaMin:00}:{etaSec:00}");
+                             print($"#{s:000} | Received: {(downloadedBytes + resumeBytes) / mb:0.00} MB - {(downloadedBytes + resumeBytes) / totalSizeBytes:P2} | Speed : {kbs:0.00} KB/s | ETA: {etaHour:00}:{etaMin:00}:{etaSec:00} - {filename} - {totalSizeBytes.HumanRead()}");
                          }
                          fs.Seek(chunkStart, SeekOrigin.Begin);
                          fs.Write(chunkDownload, 0, chunkDownload.Length);
@@ -310,21 +339,15 @@ namespace ChiaSeNhac.VN
                          File.AppendAllText(logFile, "\r\n" + s);
                      }
                  });
-
-                if (!lResult.IsCompleted)
-                {
-                    cts.Cancel();
-                }
             }
-            cts.Cancel();
 
-            Console.WriteLine("\r\nFile Download completed.");
+            print("\r\nFile Download completed.");
 
-
-            //Task.Run(() =>
-            //{
-            File.Move(tempFile, output);
-            File.Delete(logFile);
+            lock (locker)
+            {
+                File.Move(tempFile, output);
+                File.Delete(logFile);
+            }
             return output;
 
         }

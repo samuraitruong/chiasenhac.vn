@@ -15,7 +15,11 @@ namespace ChiaSeNhac.VN
         {
             return HttpUtility.UrlDecode(input);
         }
-        public static string HumanRead(this long bytes)
+        public static string HumanRead(this double bytes)
+        {
+            return HumanRead((long)bytes);
+        }
+            public static string HumanRead(this long bytes)
         {
             var kb = bytes / 1024;
             if (kb < 1000) return $"{kb:0.00} KB";
